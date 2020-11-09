@@ -69,4 +69,4 @@ already be there:
 
 ## Reboot
 
-    sudo shutdown --reboot
+    sudo shutdown --reboot now
