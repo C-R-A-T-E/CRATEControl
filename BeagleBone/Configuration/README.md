@@ -1,6 +1,6 @@
 # BeagleBone AI setup notes
 
-Comes from TI with account `debian:tempwd`, hostname beaglebone.
+Comes from TI with account `debian:temppwd`, hostname beaglebone.
 
 ## Set debian password
 
