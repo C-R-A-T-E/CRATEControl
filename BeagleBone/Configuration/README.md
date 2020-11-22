@@ -1,6 +1,6 @@
 # BeagleBone AI setup notes
 
-Comes from TI with account `debian:tempwd`, hostname beaglebone.
+Comes from TI with account `debian:temppwd`, hostname beaglebone.
 
 ## Set debian password
 
@@ -28,19 +28,28 @@ Must use `debian` account. Copied from [here](https://beagleboard.org/upgrade)
 
 ## Set hostname
 
-The preferred hostname is `chomp-hull`
+The preferred hostname is `crate-<function>`
+
+### vim
 
     sudo vim /etc/hostname
-
+    
+### emacs
+    
+    sudo emacs -nw /etc/hostname
+    
+    (launches the non-windowed (terminal-shell-based) version of emacs, if installed).
+    See instructions below for running emacs in windowed mode
+    
 ## User Account for developers
 
     sudo adduser <username>
     GRPS=$(groups | cut -d ' ' -f 2- | tr ' ' ',')
     sudo usermod -a -G $GRPS <username>
 
-## Account for robot operation
+## Account for CRATE operation
 
-    sudo adduser chomp
+    sudo adduser crate
     GRPS=$(groups | cut -d ' ' -f 2- | tr ' ' ',')
     sudo usermod -a -G $GRPS <username>
 
@@ -53,12 +62,12 @@ In `/etc/default/bb-boot`, add the line (or uncomment)
 In `/etc/network/interfaces`, comment out the whole `iface usb0` section.
 
 In `/opt/scripts/boot/bbai.sh`, comment out the two blocks starting around line
-368 that run `autocnifgure_usb[01].sh`.
+368 that run `autoconfigure_usb[01].sh`.
 
 ## Ensure a multicast route always exists.
 If LCM won't start at boot, this is probably the solution.
 
-Add these two `post-up` lines to `/etc/network/interfaces`. The reset should
+Add these two `post-up` lines to `/etc/network/interfaces`. The rest should
 already be there:
 
     auto lo
@@ -69,77 +78,27 @@ already be there:
 
 ## Reboot
 
-If the kernel was upgraded above, a reboot is necessary before building the
-devicetree overlays.
-
-## Use new account
-
-Unless you reboot, still has `beaglebone` hostname.
-
-    exit
-    ssh-copy-id <username>@beaglebone
-
-Enter password, then ssh in with keys.
-
-## Custom Devicetree
-
-Builds custom device tree overlays for UART3, UART5, UART10, SPI3, ADC, and I2C
-IMU. This should use your developer account.
-
-    cd ~
-    mkdir src
-    cd src
-    git clone git@github.com:contradict/BeagleBoard-DeviceTrees
-    cd BeagleBoard-DeviceTrees
-    git checkout -b chomp
-    make
-
-Creates the files
-
-    src/arm/BBAI-SPI3-ADC-IMU.dtb
-    src/arm/BBAI-UART10.dtb
-    src/arm/BBAI-UART3.dtb
-    src/arm/BBAI-UART5.dtb
-
-Need to copy the files to `/lib/firmware/`
-
-    sudo cp src/arm/BBAI-*.dtb /lib/firmware
-
-## Config files
-
-`uEnv.txt` needs to be updated, the lines at the end installing the DTB overlays
-are the important part, be sure not to overwrite any kernel version parameters
-earlier in the file.
-
-    90-mikrobus-cape.rules -> /etc/udev/rules.d/
-
-## Reboot
-
-Again. To use the new dtb overlays.
-
-    sudo reboot
-
-## Fetch and build libmodbus
-
-The version in the debian repositories is old and busted. The version from the
-official libmodbus site works, but is missing diagnostics. For our branch with a
-minimal diagnostics client, use this:
-
-    cd src
-    git clone -b diagnostics_client https://github.com/contradict/libmodbus
-    cd libmodbus
-    ./autogen.sh
-    ./configure --prefix=/usr/local/
-    make
-    sudo make install DESTDIR=/usr/local/stow/libmodbus-diag
-    sudo mv /usr/local/stow/libmodbus-diag/usr/local/* /usr/local/stow/libmodbus-diag
-    sudo rm -r /usr/local/stow/libmodbus-diag/usr
-    sudo stow -d /usr/local/stow libmodbus-diag
-
-## Fetch and build project
-
-    cd src
-    git clone git@github.com:contradict/Stomp
-    cd Stomp/Platform
-    make -C Test
-    make -C SimpleGait
+    sudo shutdown --reboot now
+    
+## Running emacs in windowed mode on a connected host machine
+    
+    After launching emacs in a window on the connected host machine, type
+    
+    C-x C-f
+    
+    which is the usual command for opening a file. This will put you in the minibuffer.
+    Backspace over the default text in the minibuffer, if any, then type
+    
+    /ssh:<username>@<hostname>|sudo:<hostname>:/<filename on the BBAI you want to edit>
+    
+    where <username> is the sudo-enabled user on the BBAI and <hostname> is the BBAI's
+    hostname.
+    
+    for example, for user 'nts' on the BBAI 'CRATE'
+    
+    /ssh:nts@CRATE|sudo:CRATE:/home/nts/test.txt
+    
+    After a brief delay you'll be asked for the su password on the BBAI. After that hit 
+    return when asked about saving credentials and you should see the file open up in
+    a new emacs buffer. From that point editing should work as normal except for slight
+    delays and extra messages in the minibuffer when saving, etc.
