@@ -1,4 +1,14 @@
-//  This code stated as a TI example from pru-software-support-package/examples
+// Program expects that there are status LED connected at
+//
+// BBAI Header Pin P8.14 - PRU Heartbeat
+// BBAI Header Pin P8.16 - eCap Activity
+// BBAI Header Pin P8.18 - RPMsg Activity
+// 
+// Also, the square wave input signal is connect at
+//
+// BBAI Header Pin P8.15 - PRU 1 eCap input 
+//
+// This code stated as a TI example from pru-software-support-package/examples
 
 #include <stdint.h>
 #include <stdio.h>
@@ -12,37 +22,28 @@
 volatile register uint32_t __R30;
 volatile register uint32_t __R31;
 
-// Host-0 Interrupt sets bit 30 in register R31
-#define HOST_INT ((uint32_t) 1 << 30)
+// RPMsg constants
+
+static const uint32_t k_host_interupt = 0x1 << 30;
 
 // The PRU-ICSS system events used for RPMsg are defined in the Linux device tree
 // PRU0 uses system event 16 (To ARM) and 17 (From ARM)
 // PRU1 uses system event 18 (To ARM) and 19 (From ARM)
-#define TO_ARM_HOST 16
-#define FROM_ARM_HOST 17
 
-// Using the name 'rpmsg-pru' will probe the rpmsg_pru driver found
-// at linux-x.y.z/drivers/rpmsg/rpmsg_pru.c
-#define CHAN_NAME "rpmsg-pru"
-#define CHAN_DESC "Channel 30"
-#define CHAN_PORT 30
+static const uint32_t k_pru_to_host_event = 16;
+static const uint32_t k_pru_from_host_event = 17;
 
-// Used to make sure the Linux drivers are ready for RPMsg communication
-// Found at linux-x.y.z/include/uapi/linux/virtio_config.h
-#define VIRTIO_CONFIG_S_DRIVER_OK 4
-
-#define RPMSG_BUF_HEADER_SIZE           16
-uint8_t payload[RPMSG_BUF_SIZE - RPMSG_BUF_HEADER_SIZE];
+// RPMsg statics
 
 static struct pru_rpmsg_transport s_transport;
+static int8_t s_payload[RPMSG_BUF_SIZE];
+
 
 //  The output pins used to communicate status via connected LEDs
 
-uint32_t pr1_pru1_gpo5  = 0x1 << 5;     // BBAI Header Pin P8.18
-uint32_t pr1_pru1_gpo9  = 0x1 << 9;     // BBAI Header Pin P8.14
-uint32_t pr1_pru1_gpo18 = 0x1 << 18;    // BBAI Header Pin P8.16
-
-uint32_t pr1_ecap0_ecap_capin_apwm_o = 0x1 << 15;    // BBAI Header Pin P8.15
+static const uint32_t pr1_pru1_gpo5  = 0x1 << 5;     // BBAI Header Pin P8.18
+static const uint32_t pr1_pru1_gpo9  = 0x1 << 9;     // BBAI Header Pin P8.14
+static const uint32_t pr1_pru1_gpo18 = 0x1 << 18;    // BBAI Header Pin P8.16
 
 //  forward decl of internal methods
 
@@ -62,24 +63,26 @@ void updateHeartbeat();
 
 void main(void)
 {
-    //  Init
+    // Init
 
     initSysCfg();
     intcSetup();
     initECap();
-    //initRPMsg();
+    initRPMsg();
     initGPIO();
 
+    // Update
+    
     while (1) 
     {
-        //updateRPMsg();
+        updateRPMsg();
         updateECap();
         updateHeartbeat();
     }
 }
 
 //
-//  Init
+//  Init Methods
 //
 
 void initSysCfg()
@@ -91,7 +94,7 @@ void initSysCfg()
 void intcSetup()
 {
     // Clear the status of the PRU-ICSS system event that the ARM will use to 'kick' us
-    CT_INTC.SICR_bit.STATUS_CLR_INDEX = FROM_ARM_HOST;
+    CT_INTC.SICR_bit.STATUS_CLR_INDEX = k_pru_from_host_event;
 }
 
 void initECap()
@@ -146,14 +149,23 @@ void initRPMsg()
     volatile uint8_t *status;
 
     // Make sure the Linux drivers are ready for RPMsg communication 
+    // Used to make sure the Linux drivers are ready for RPMsg communication
+    // Found at linux-x.y.z/include/uapi/linux/virtio_config.h
+
     status = &resourceTable.rpmsg_vdev.status;
-    while (!(*status & VIRTIO_CONFIG_S_DRIVER_OK));
+    while (!(*status & 0x04));
 
     // Initialize the RPMsg transport structure 
-    pru_rpmsg_init(&s_transport, &resourceTable.rpmsg_vring0, &resourceTable.rpmsg_vring1, TO_ARM_HOST, FROM_ARM_HOST);
+    // PRU0 uses system event 16 (To ARM) and 17 (From ARM)
+    // PRU1 uses system event 18 (To ARM) and 19 (From ARM)
+
+    pru_rpmsg_init(&s_transport, &resourceTable.rpmsg_vring0, &resourceTable.rpmsg_vring1, k_pru_to_host_event, k_pru_from_host_event);
 
     // Create the RPMsg channel between the PRU and ARM user space using the transport structure. 
-    while (pru_rpmsg_channel(RPMSG_NS_CREATE, &s_transport, CHAN_NAME, CHAN_DESC, CHAN_PORT) != PRU_RPMSG_SUCCESS);
+    // Using the name 'rpmsg-pru' will probe the rpmsg_pru driver found
+    // at linux-x.y.z/drivers/rpmsg/rpmsg_pru.c
+    
+    while (pru_rpmsg_channel(RPMSG_NS_CREATE, &s_transport, "rpmsg-pru", "Channel 30", 30) != PRU_RPMSG_SUCCESS);
 }
 
 void initGPIO()
@@ -185,9 +197,8 @@ void initGPIO()
 }
 
 //
-// Update
+// Update Methods
 //
-
 
 void updateECap()
 {
@@ -233,16 +244,16 @@ void updateRPMsg()
     //  Check for Host Interrupt Event
     //
 
-    if (__R31 & HOST_INT) 
+    if (__R31 & k_host_interupt)
     {
         // Clear the host interrupt envent
-        CT_INTC.SICR_bit.STATUS_CLR_INDEX = FROM_ARM_HOST;
+        CT_INTC.SICR_bit.STATUS_CLR_INDEX = k_pru_from_host_event;
 
         // Receive all available messages, multiple messages can be sent per kick 
-        while (pru_rpmsg_receive(&s_transport, &src, &dst, payload, &len) == PRU_RPMSG_SUCCESS) 
+        while (pru_rpmsg_receive(&s_transport, &src, &dst, s_payload, &len) == PRU_RPMSG_SUCCESS) 
         {
             // Echo the message back to the same address from which we just received 
-            pru_rpmsg_send(&s_transport, dst, src, payload, len);
+            pru_rpmsg_send(&s_transport, dst, src, s_payload, len);
         }
     }
 }
