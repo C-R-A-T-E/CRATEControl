@@ -17,12 +17,14 @@
 #include <pru_ecap.h>
 #include <rsc_types.h>
 #include <pru_rpmsg.h>
-#include "resource_table_0.h"
+
+#include "resource_table_1.h"
+#include "pru_time.h"
 
 volatile register uint32_t __R30;
 volatile register uint32_t __R31;
 
-// RPMsg constants
+// file scope consts
 
 static const uint32_t k_host_interupt = 0x1 << 30;
 
@@ -33,11 +35,15 @@ static const uint32_t k_host_interupt = 0x1 << 30;
 static const uint32_t k_pru_to_host_event = 16;
 static const uint32_t k_pru_from_host_event = 17;
 
-// RPMsg statics
+static const uint32_t k_heartbeat_dt = 500000;
+
+// file scope statics
 
 static struct pru_rpmsg_transport s_transport;
 static int8_t s_payload[RPMSG_BUF_SIZE];
 
+
+static uint32_t s_heartbeat_start_time;
 
 //  The output pins used to communicate status via connected LEDs
 
@@ -47,15 +53,16 @@ static const uint32_t pr1_pru1_gpo18 = 0x1 << 18;    // BBAI Header Pin P8.16
 
 //  forward decl of internal methods
 
-void initSysCfg();
-void intcSetup();
-void initECap();
-void initRPMsg();
-void initGPIO();
+void init_syscfg();
+void init_intc();
+void init_ecap();
+void init_rpmsg();
+void init_gpio();
+void init_heartbeat();
 
-void updateRPMsg();
-void updateECap();
-void updateHeartbeat();
+void update_rpmsg();
+void update_ecap();
+void update_heartbeat();
 
 //
 //  Main
@@ -65,19 +72,24 @@ void main(void)
 {
     // Init
 
-    initSysCfg();
-    intcSetup();
-    initECap();
-    initRPMsg();
-    initGPIO();
+    pru_time_init();
+
+    init_syscfg();
+    init_intc();
+    init_ecap();
+    init_rpmsg();
+    init_gpio();
+    init_heartbeat();
 
     // Update
     
     while (1) 
     {
-        updateRPMsg();
-        updateECap();
-        updateHeartbeat();
+        pru_time_update();
+
+        update_rpmsg();
+        update_ecap();
+        update_heartbeat();
     }
 }
 
@@ -85,19 +97,19 @@ void main(void)
 //  Init Methods
 //
 
-void initSysCfg()
+void init_syscfg()
 {
     // Allow OCP master port access by the PRU so the PRU can read external memories
     CT_CFG.SYSCFG_bit.STANDBY_INIT = 0x0;
 }
 
-void intcSetup()
+void init_intc()
 {
     // Clear the status of the PRU-ICSS system event that the ARM will use to 'kick' us
     CT_INTC.SICR_bit.STATUS_CLR_INDEX = k_pru_from_host_event;
 }
 
-void initECap()
+void init_ecap()
 {
     // ECAP Control Register 1
     // Clear, which gets us most of the setting we want
@@ -144,7 +156,7 @@ void initECap()
     (*ctrl_core_pad_pr1_ecap0_ecap_capin_apwm_o) = pad_cfg_ecap;
 }
 
-void initRPMsg()
+void init_rpmsg()
 {
     volatile uint8_t *status;
 
@@ -164,11 +176,11 @@ void initRPMsg()
     // Create the RPMsg channel between the PRU and ARM user space using the transport structure. 
     // Using the name 'rpmsg-pru' will probe the rpmsg_pru driver found
     // at linux-x.y.z/drivers/rpmsg/rpmsg_pru.c
-    
-    while (pru_rpmsg_channel(RPMSG_NS_CREATE, &s_transport, "rpmsg-pru", "Channel 30", 30) != PRU_RPMSG_SUCCESS);
+
+    while (pru_rpmsg_channel(RPMSG_NS_CREATE, &s_transport, "rpmsg-pru", "PRUMessages", 31) != PRU_RPMSG_SUCCESS);
 }
 
-void initGPIO()
+void init_gpio()
 {
     // need to set the mux mode of the pad register to select the pru gpio mode.
     // registers are named after muxmode 0.  This is the register name to our 
@@ -196,11 +208,16 @@ void initGPIO()
     __R30 &= ~(pr1_pru1_gpo18);
 }
 
+void init_heartbeat()
+{
+    s_heartbeat_start_time = pru_time_gettime();
+}
+
 //
 // Update Methods
 //
 
-void updateECap()
+void update_ecap()
 {
     // Was an interupt generated
     
@@ -236,7 +253,7 @@ void updateECap()
     }
 }
 
-void updateRPMsg()
+void update_rpmsg()
 {
     uint16_t src, dst, len;
 
@@ -258,12 +275,21 @@ void updateRPMsg()
     }
 }
 
-void updateHeartbeat()
+void update_heartbeat()
 {
-    __R30 |= pr1_pru1_gpo5;
-    __R30 |= pr1_pru1_gpo9;
+    uint32_t time = pru_time_gettime();
     
-    //__R30 &= ~(pr1_pru1_gpo5);
-    //__R30 &= ~(pr1_pru1_gpo9);
-    //__R30 &= ~(pr1_pru1_gpo18);
+    if (time - s_heartbeat_start_time > k_heartbeat_dt)
+    {
+        s_heartbeat_start_time = time;
+
+        if (__R30 & pr1_pru1_gpo9)
+        {
+            __R30 &= ~(pr1_pru1_gpo9);
+        }
+        else
+        {
+            __R30 |= pr1_pru1_gpo9;
+        }
+    }
 }

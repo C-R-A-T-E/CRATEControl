@@ -9,8 +9,12 @@ CHIP_REV = am572x_2_0
 PRU_CGT =/usr/lib/ti/pru-software-support-package
 PRU_CGT_CUSTOM = ../../pru-software-support-package
 
+CORE = ../../Core
+CORE_OUT_DIR = $(CORE)/pru/out
+PRU_TIME_OBJ = $(CORE_OUT_DIR)/pru_time.o
+
 LIBS =--library=$(PRU_CGT)/lib/rpmsg_lib.lib
-INCLUDE = --include_path=$(PRU_CGT)/include --include_path=$(PRU_CGT_CUSTOM)/include/$(CHIP_REV) --include_path=$(PRU_CGT)/include/$(CHIP_REV)
+INCLUDE = --include_path=$(PRU_CGT)/include --include_path=$(PRU_CGT_CUSTOM)/include/$(CHIP_REV) --include_path=$(PRU_CGT)/include/$(CHIP_REV) --include_path=$(CORE)/pru
 
 STACK_SIZE = 0x100
 HEAP_SIZE = 0x100
@@ -35,11 +39,15 @@ OBJS    = $(patsubst %,$(OUT_DIR)/%,$(SOURCES:.c=.o))
 
 all: $(TARGET)
 
-$(TARGET): $(OBJS) $(LINKER_COMMAND_FILE)
-	/usr/bin/clpru $(CFLAGS) -z -i$(PRU_CGT)/lib -i$(PRU_CGT)/include $(LFLAGS) -o $(TARGET) $(OBJS) -m$(MAP) $(LINKER_COMMAND_FILE) --library=libc.a $(LIBS)
+$(TARGET): $(OBJS) $(PRU_TIME_OBJ) $(LINKER_COMMAND_FILE)
+	/usr/bin/clpru $(CFLAGS) -z -i$(PRU_CGT)/lib -i$(PRU_CGT)/include $(LFLAGS) -o $(TARGET) $(OBJS) $(PRU_TIME_OBJ) -m$(MAP) $(LINKER_COMMAND_FILE) --library=libc.a $(LIBS)
 
 $(OUT_DIR)/%.o: %.c
 	@mkdir -p $(OUT_DIR)
+	/usr/bin/clpru --include_path=$(PRU_CGT)/include $(INCLUDE) $(CFLAGS) -fe $@ $<
+
+$(CORE_OUT_DIR)/pru_time.o: $(CORE)/pru/pru_time.c
+	@mkdir -p $(CORE_OUT_DIR)
 	/usr/bin/clpru --include_path=$(PRU_CGT)/include $(INCLUDE) $(CFLAGS) -fe $@ $<
 
 run: $(TARGET) stop
@@ -64,6 +72,7 @@ stop:
 # Remove the $(OUT_DIR) directory
 clean:
 	rm -rf $(OUT_DIR)
+	rm -rf $(CORE_OUT_DIR)
 
 # Includes the dependencies that the compiler creates (-ppd and -ppa flags)
 -include $(OBJS:%.o=%.pp)
