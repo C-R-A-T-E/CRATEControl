@@ -38,6 +38,10 @@
 #include <rsc_types.h>
 #include "pru_virtio_ids.h"
 
+// In the example code this is define in
+// pru-icss-5.6.0/include/rsc_types.h
+#define FW_RSC_ADDR_ANY           (~0)
+
 /*
  * Sizes of the virtqueues (expressed in number of buffers supported,
  * and must be power of 2)
@@ -102,14 +106,14 @@ struct my_resource_table resourceTable = {
 	},
 	/* the two vrings */
 	{
-		0,                      //da, will be populated by host, can't pass it in
+		FW_RSC_ADDR_ANY,        //da, will be populated by host, can't pass it in
 		16,                     //align (bytes),
 		PRU_RPMSG_VQ0_SIZE,     //num of descriptors
 		0,                      //notifyid, will be populated, can't pass right now
 		0                       //reserved
 	},
 	{
-		0,                      //da, will be populated by host, can't pass it in
+		FW_RSC_ADDR_ANY,        //da, will be populated by host, can't pass it in
 		16,                     //align (bytes),
 		PRU_RPMSG_VQ1_SIZE,     //num of descriptors
 		0,                      //notifyid, will be populated, can't pass right now
@@ -117,7 +121,7 @@ struct my_resource_table resourceTable = {
 	},
 
 	{
-		TYPE_CUSTOM, TYPE_PRU_INTS,
+		TYPE_POSTLOAD_VENDOR, PRU_INTS_VER0 | TYPE_PRU_INTS,
 		sizeof(struct fw_rsc_custom_ints),
 		{ /* PRU_INTS version */
 			0x0000,

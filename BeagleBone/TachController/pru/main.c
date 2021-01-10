@@ -32,15 +32,17 @@ static const uint32_t k_host_interupt = 0x1 << 30;
 // PRU0 uses system event 16 (To ARM) and 17 (From ARM)
 // PRU1 uses system event 18 (To ARM) and 19 (From ARM)
 
-static const uint32_t k_pru_to_host_event = 16;
-static const uint32_t k_pru_from_host_event = 17;
+static const uint32_t k_pru_to_host_event = 18;
+static const uint32_t k_pru_from_host_event = 19;
 
 static const uint32_t k_heartbeat_dt = 500000;
 
 // file scope statics
 
 static struct pru_rpmsg_transport s_transport;
-static int8_t s_payload[RPMSG_BUF_SIZE];
+// In example code this RPMSG_MESSAGE_SIZE, which is defined in
+// pru-icss-5.60/include/pru_rpmsg.h
+static int8_t s_payload[496];
 
 
 static uint32_t s_heartbeat_start_time;
