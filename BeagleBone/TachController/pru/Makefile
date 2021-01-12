@@ -11,7 +11,7 @@ PRU_CGT_CUSTOM = ../../pru-software-support-package
 
 CORE = ../../Core
 CORE_OUT_DIR = $(CORE)/pru/out
-PRU_TIME_OBJ = $(CORE_OUT_DIR)/pru_time.o
+CORE_OBJS = $(CORE_OUT_DIR)/pru_time.o $(CORE_OUT_DIR)/pru_util.o
 
 LIBS =--library=$(PRU_CGT)/lib/rpmsg_lib.lib
 INCLUDE = --include_path=$(PRU_CGT)/include --include_path=$(PRU_CGT_CUSTOM)/include/$(CHIP_REV) --include_path=$(PRU_CGT)/include/$(CHIP_REV) --include_path=$(CORE)/pru
@@ -39,14 +39,18 @@ OBJS    = $(patsubst %,$(OUT_DIR)/%,$(SOURCES:.c=.o))
 
 all: $(TARGET)
 
-$(TARGET): $(OBJS) $(PRU_TIME_OBJ) $(LINKER_COMMAND_FILE)
-	/usr/bin/clpru $(CFLAGS) -z -i$(PRU_CGT)/lib -i$(PRU_CGT)/include $(LFLAGS) -o $(TARGET) $(OBJS) $(PRU_TIME_OBJ) -m$(MAP) $(LINKER_COMMAND_FILE) --library=libc.a $(LIBS)
+$(TARGET): $(OBJS) $(CORE_OBJS) $(LINKER_COMMAND_FILE)
+	/usr/bin/clpru $(CFLAGS) -z -i$(PRU_CGT)/lib -i$(PRU_CGT)/include $(LFLAGS) -o $(TARGET) $(OBJS) $(CORE_OBJS) -m$(MAP) $(LINKER_COMMAND_FILE) --library=libc.a $(LIBS)
 
 $(OUT_DIR)/%.o: %.c
 	@mkdir -p $(OUT_DIR)
 	/usr/bin/clpru --include_path=$(PRU_CGT)/include $(INCLUDE) $(CFLAGS) -fe $@ $<
 
 $(CORE_OUT_DIR)/pru_time.o: $(CORE)/pru/pru_time.c
+	@mkdir -p $(CORE_OUT_DIR)
+	/usr/bin/clpru --include_path=$(PRU_CGT)/include $(INCLUDE) $(CFLAGS) -fe $@ $<
+
+$(CORE_OUT_DIR)/pru_util.o: $(CORE)/pru/pru_util.c
 	@mkdir -p $(CORE_OUT_DIR)
 	/usr/bin/clpru --include_path=$(PRU_CGT)/include $(INCLUDE) $(CFLAGS) -fe $@ $<
 

@@ -12,23 +12,36 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+
 #include <pru_cfg.h>
 #include <pru_intc.h>
 #include <pru_ecap.h>
 #include <rsc_types.h>
 #include <pru_rpmsg.h>
 
-#include "resource_table_1.h"
+#include "pru_util.h"
 #include "pru_time.h"
+
+#include "resource_table_1.h"
 
 volatile register uint32_t __R30;
 volatile register uint32_t __R31;
 
+// -----------------------------------------------------------------------------
 // file scope consts
+// -----------------------------------------------------------------------------
 
-static const uint32_t k_host_interupt = 0x1 << 30;
+static const uint32_t k_num_teeth = 20;
+static const uint32_t k_cycles_to_micros = 200;
+static const uint32_t k_dt_to_hz = 1000000;
 
-// The PRU-ICSS system events used for RPMsg are defined in the Linux device tree
+static const uint32_t k_message_buffer_max_len = 496;
+static const uint32_t k_message_delay_dt_max = 1000000;
+
+// The PRU-ICSS system events used for RPMsg are defined in the Linux 
+// device tree
+//
 // PRU0 uses system event 16 (To ARM) and 17 (From ARM)
 // PRU1 uses system event 18 (To ARM) and 19 (From ARM)
 
@@ -37,23 +50,37 @@ static const uint32_t k_pru_from_host_event = 19;
 
 static const uint32_t k_heartbeat_dt = 500000;
 
-// file scope statics
-
-static struct pru_rpmsg_transport s_transport;
-// In example code this RPMSG_MESSAGE_SIZE, which is defined in
-// pru-icss-5.60/include/pru_rpmsg.h
-static int8_t s_payload[496];
-
-
-static uint32_t s_heartbeat_start_time;
-
 //  The output pins used to communicate status via connected LEDs
 
 static const uint32_t pr1_pru1_gpo5  = 0x1 << 5;     // BBAI Header Pin P8.18
 static const uint32_t pr1_pru1_gpo9  = 0x1 << 9;     // BBAI Header Pin P8.14
 static const uint32_t pr1_pru1_gpo18 = 0x1 << 18;    // BBAI Header Pin P8.16
 
+// -----------------------------------------------------------------------------
+// file scope statics
+// -----------------------------------------------------------------------------
+
+static struct pru_rpmsg_transport s_transport;
+
+static uint32_t s_signal_low_dt;
+static uint32_t s_signal_high_dt;
+
+static uint32_t s_heartbeat_start_time;
+
+static char s_message_last_send_time;
+static char s_message_buffer[496];
+static uint32_t s_message_buffer_index;
+
+static char s_tmp_message_buffer[496];
+
+static uint16_t s_rpmsg_arm_addr;
+static uint16_t s_rpmsg_pru_addr;
+
+static uint8_t s_connected_to_arm;
+
+// -----------------------------------------------------------------------------
 //  forward decl of internal methods
+// -----------------------------------------------------------------------------
 
 void init_syscfg();
 void init_intc();
@@ -66,9 +93,9 @@ void update_rpmsg();
 void update_ecap();
 void update_heartbeat();
 
-//
+// -----------------------------------------------------------------------------
 //  Main
-//
+// -----------------------------------------------------------------------------
 
 void main(void)
 {
@@ -95,9 +122,69 @@ void main(void)
     }
 }
 
-//
+void send_message()
+{
+    // Only send message if there is someone on the other side listing
+
+    if (s_connected_to_arm)
+    {
+        pru_rpmsg_send(&s_transport, s_rpmsg_pru_addr, s_rpmsg_arm_addr, s_message_buffer, k_message_buffer_max_len);//s_message_buffer_index);
+    }
+
+    s_message_buffer_index = 0;
+    memset(s_message_buffer, 0, k_message_buffer_max_len);
+
+    s_message_last_send_time = pru_time_gettime();
+}
+
+void append_to_message(uint32_t dt)
+{
+    uint32_t timestamp = pru_time_gettime();
+    uint32_t dt_per_revelution = dt * k_num_teeth;
+    uint32_t rpm = k_dt_to_hz / dt_per_revelution;
+
+    // Can't use sprintf beacuse it doesn't fit in PRU memory
+    // so used an custom itoa impl
+    
+    char* message = s_tmp_message_buffer;
+
+    char* timestamp_string = pru_util_itoa(timestamp, 10);
+    int timestamp_string_len = strlen(timestamp_string);
+    memcpy(message, timestamp_string, timestamp_string_len);
+
+    message += timestamp_string_len;
+    *message = ':';
+    message++;
+
+    char* rpm_string = pru_util_itoa(rpm, 10);
+    int rpm_string_len = strlen(rpm_string);
+    memcpy(message, rpm_string, rpm_string_len);
+
+    message += rpm_string_len;
+    *message = '\n';
+    message++;
+    *message = 0;
+
+    // if it has been too long since last message send, or we will over
+    // flow the buffer, send the current message and then add this to 
+    // a new message buffer
+    
+    int32_t message_len = strlen(s_tmp_message_buffer);
+    uint32_t current_time = pru_time_gettime();
+
+    if (current_time - s_message_last_send_time > k_message_delay_dt_max ||
+        s_message_buffer_index + message_len > k_message_buffer_max_len)
+    {
+        send_message();
+    }
+
+    memcpy(&s_message_buffer[s_message_buffer_index], s_tmp_message_buffer, message_len); 
+    s_message_buffer_index += message_len;
+}
+
+// -----------------------------------------------------------------------------
 //  Init Methods
-//
+// -----------------------------------------------------------------------------
 
 void init_syscfg()
 {
@@ -126,11 +213,19 @@ void init_ecap()
     // Capture event 1 is rising edge and capture event 2 is on falling edge
     CT_ECAP.ECCTL1_bit.CAP1POL = 0x0;
     CT_ECAP.ECCTL1_bit.CAP2POL = 0x1;
+    
+    // Enable loading timer into capture registers
+    CT_ECAP.ECCTL1_bit.CAPLDEN = 0x1;
 
     // ECAP Control Register 2
     // reset, which gets us most of the setting we want
     CT_ECAP.ECCTL2 = 0x00000000;
+
+    // Only using first 2 capture events, so wrap after capture event 2
     CT_ECAP.ECCTL2_bit.STOPVALUE = 0x1;
+
+    // Free running TSCNT
+    CT_ECAP.ECCTL2_bit.TSCNTSTP = 0x1;
 
     // ECAP Interrupt Enable Register
     // Clear, which gets us most of the setting we want
@@ -156,6 +251,10 @@ void init_ecap()
     //  Setup header pin P8.15 correctly for eCap input
     (*ctrl_core_pad_vin2a_d19) = pad_cfg_disabled;
     (*ctrl_core_pad_pr1_ecap0_ecap_capin_apwm_o) = pad_cfg_ecap;
+
+    //  init our dt counters
+    s_signal_low_dt = 0;
+    s_signal_high_dt = 0;
 }
 
 void init_rpmsg()
@@ -170,16 +269,36 @@ void init_rpmsg()
     while (!(*status & 0x04));
 
     // Initialize the RPMsg transport structure 
-    // PRU0 uses system event 16 (To ARM) and 17 (From ARM)
-    // PRU1 uses system event 18 (To ARM) and 19 (From ARM)
 
-    pru_rpmsg_init(&s_transport, &resourceTable.rpmsg_vring0, &resourceTable.rpmsg_vring1, k_pru_to_host_event, k_pru_from_host_event);
+    pru_rpmsg_init(&s_transport, 
+            &resourceTable.rpmsg_vring0, 
+            &resourceTable.rpmsg_vring1, 
+            k_pru_to_host_event, 
+            k_pru_from_host_event);
 
     // Create the RPMsg channel between the PRU and ARM user space using the transport structure. 
     // Using the name 'rpmsg-pru' will probe the rpmsg_pru driver found
     // at linux-x.y.z/drivers/rpmsg/rpmsg_pru.c
 
-    while (pru_rpmsg_channel(RPMSG_NS_CREATE, &s_transport, "rpmsg-pru", "PRUMessages", 31) != PRU_RPMSG_SUCCESS);
+    uint32_t message_status;
+    do
+    {
+         message_status = pru_rpmsg_channel(RPMSG_NS_CREATE, 
+                 &s_transport, 
+                 "rpmsg-pru", 
+                 "PRUMessages", 
+                 31);
+    } while (message_status != PRU_RPMSG_SUCCESS);
+
+    // Need to get first message from arm before we have established there is someone listing
+    s_connected_to_arm = 0;
+
+    // init message send time
+    s_message_last_send_time = pru_time_gettime();
+
+    // Clear out the message buffer
+    s_message_buffer_index = 0;
+    memset(s_message_buffer, 0, k_message_buffer_max_len);
 }
 
 void init_gpio()
@@ -215,9 +334,9 @@ void init_heartbeat()
     s_heartbeat_start_time = pru_time_gettime();
 }
 
-//
+// -----------------------------------------------------------------------------
 // Update Methods
-//
+// -----------------------------------------------------------------------------
 
 void update_ecap()
 {
@@ -230,25 +349,34 @@ void update_ecap()
             // turn on the eCap trigger LED
             __R30 |= pr1_pru1_gpo18;
     
-            //  Grab the counter, which is a difference since last capture event 1
-            uint32_t dt = CT_ECAP.CAP1;
+            //  Grab the counter, which is cycle difference since last capture
+            //  event 1.  This is the time signal was low, right before event 1
+            //  (signal goes high) triggers.  Store as micorseconds
+            
+            s_signal_low_dt = CT_ECAP.CAP1 / k_cycles_to_micros;
      
             //  Clear the interrupt
      
             CT_ECAP.ECCLR_bit.CEVT1 = 0x1;
-     
-            //  Update message buffer with new timing
-            //  TODO
-        }
+        } 
 
         if (CT_ECAP.ECFLG_bit.CEVT2 == 0x1)
         {
             // turn 0ff the eCap trigger LED
             __R30 &= ~(pr1_pru1_gpo18);
+
+            //  Grab the counter, which is cycle difference since last capture
+            //  event 2.  This is the time signal was high, right before event 2
+            //  (signal goes low) triggers.  Store as micorseconds
+            
+            s_signal_high_dt = CT_ECAP.CAP2 / k_cycles_to_micros;
     
             //  Clear the interrupt
      
             CT_ECAP.ECCLR_bit.CEVT2 = 0x1;
+
+            //  We have 1 complete high - low cycle.  Write it out to the message
+            append_to_message(s_signal_high_dt + s_signal_low_dt);
         }
 
         CT_ECAP.ECCLR_bit.INT = 0x1;
@@ -257,23 +385,24 @@ void update_ecap()
 
 void update_rpmsg()
 {
-    uint16_t src, dst, len;
+    uint16_t message_len;
 
     //  
     //  Check for Host Interrupt Event
     //
-
-    if (__R31 & k_host_interupt)
+ 
+    if (__R31 & k_pru_from_host_event)
     {
         // Clear the host interrupt envent
         CT_INTC.SICR_bit.STATUS_CLR_INDEX = k_pru_from_host_event;
 
         // Receive all available messages, multiple messages can be sent per kick 
-        while (pru_rpmsg_receive(&s_transport, &src, &dst, s_payload, &len) == PRU_RPMSG_SUCCESS) 
+        while (pru_rpmsg_receive(&s_transport, &s_rpmsg_arm_addr, &s_rpmsg_pru_addr, s_tmp_message_buffer, &message_len) == PRU_RPMSG_SUCCESS) 
         {
-            // Echo the message back to the same address from which we just received 
-            pru_rpmsg_send(&s_transport, dst, src, s_payload, len);
+            __R30 |= pr1_pru1_gpo5;
         }
+
+        s_connected_to_arm = 1;
     }
 }
 

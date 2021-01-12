@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <pru_ctrl.h>
 
-#include "time.h"
+#include "pru_time.h"
 
 // file scope consts
 

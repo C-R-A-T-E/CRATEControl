@@ -46,7 +46,6 @@ char readBuf[MAX_BUFFER_SIZE];
 int main(void)
 {
 	struct pollfd pollfds[1];
-	int i;
 	int result = 0;
 
 	/* Open the rpmsg_pru character device file */
@@ -66,16 +65,23 @@ int main(void)
 	/* The RPMsg channel exists and the character device is opened */
 	printf("Opened %s, sending %d messages\n\n", DEVICE_NAME, NUM_MESSAGES);
 
-	for (i = 0; i < NUM_MESSAGES; i++) {
-		/* Send 'hello world!' to the PRU through the RPMsg channel */
-		result = write(pollfds[0].fd, "hello world!", 13);
-		if (result > 0)
-			printf("Message %d: Sent to PRU\n", i);
+	/* Send 'hello world!' to the PRU through the RPMsg channel */
+	result = write(pollfds[0].fd, "hello world!", 13);
+	if (result > 0)
+        {
+		printf("Message: Sent to PRU\n");
+        }
 
+        while (1)
+        {
 		/* Poll until we receive a message from the PRU and then print it */
 		result = read(pollfds[0].fd, readBuf, MAX_BUFFER_SIZE);
+
 		if (result > 0)
-			printf("Message %d received from PRU:%s\n\n", i, readBuf);
+                {
+		    printf("%s", readBuf);
+		    printf("strlen = %d\n", strlen(readBuf));
+                }
 	}
 
 	/* Received all the messages the example is complete */
