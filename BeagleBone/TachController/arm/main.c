@@ -1,94 +1,170 @@
-/*
- * Copyright (C) 2015 Texas Instruments Incorporated - http://www.ti.com/
- *
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- *	* Redistributions of source code must retain the above copyright
- *	  notice, this list of conditions and the following disclaimer.
- *
- *	* Redistributions in binary form must reproduce the above copyright
- *	  notice, this list of conditions and the following disclaimer in the
- *	  documentation and/or other materials provided with the
- *	  distribution.
- *
- *	* Neither the name of Texas Instruments Incorporated nor the names of
- *	  its contributors may be used to endorse or promote products derived
- *	  from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
-
 #include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <unistd.h>
+
 #include <fcntl.h>
 #include <string.h>
 #include <sys/poll.h>
 
-#define MAX_BUFFER_SIZE		512
-char readBuf[MAX_BUFFER_SIZE];
+// -----------------------------------------------------------------------------
+// file scope consts
+// -----------------------------------------------------------------------------
 
-#define NUM_MESSAGES		100
-#define DEVICE_NAME		"/dev/rpmsg_pru31"
+static const char* k_pru_channel_device = "/dev/rpmsg_pru31";
+
+static const char* k_pru_rproc_device_root = "/sys/class/remoteproc/remoteproc5/";
+static const char* k_pru_firmware_root = "/lib/firmware/";
+static const char* k_pru_firmware = "am57xx-pru1_1-tach_control";
+
+static const uint32_t k_message_buffer_max_len = 512;
+
+// -----------------------------------------------------------------------------
+// file scope statics
+// -----------------------------------------------------------------------------
+
+static char s_message_buffer[512];
+struct pollfd s_pru_channel;
+
+// -----------------------------------------------------------------------------
+//  forward decl of internal methods
+// -----------------------------------------------------------------------------
+
+void init_pru();
+void init_rpmsg();
+
+void update_rpmsg();
+
+// -----------------------------------------------------------------------------
+//  Main
+// -----------------------------------------------------------------------------
 
 int main(void)
 {
-	struct pollfd pollfds[1];
-	int result = 0;
+    // Init
 
-	/* Open the rpmsg_pru character device file */
-	pollfds[0].fd = open(DEVICE_NAME, O_RDWR);
+    init_pru();
+    init_rpmsg();
 
-	/*
-	 * If the RPMsg channel doesn't exist yet the character device
-	 * won't either.
-	 * Make sure the PRU firmware is loaded and that the rpmsg_pru
-	 * module is inserted.
-	 */
-	if (pollfds[0].fd < 0) {
-		printf("Failed to open %s\n", DEVICE_NAME);
-		return -1;
-	}
+    // Update
 
-	/* The RPMsg channel exists and the character device is opened */
-	printf("Opened %s, sending %d messages\n\n", DEVICE_NAME, NUM_MESSAGES);
+    while (1)
+    {
+        update_rpmsg();
+    }
 
-	/* Send 'hello world!' to the PRU through the RPMsg channel */
-	result = write(pollfds[0].fd, "hello world!", 13);
-	if (result > 0)
-        {
-		printf("Message: Sent to PRU\n");
-        }
-
-        while (1)
-        {
-		/* Poll until we receive a message from the PRU and then print it */
-		result = read(pollfds[0].fd, readBuf, MAX_BUFFER_SIZE);
-
-		if (result > 0)
-                {
-		    printf("%s", readBuf);
-		    printf("strlen = %d\n", strlen(readBuf));
-                }
-	}
-
-	/* Received all the messages the example is complete */
-	printf("Received %d messages, closing %s\n", NUM_MESSAGES, DEVICE_NAME);
-
-	/* Close the rpmsg_pru character device file */
-	close(pollfds[0].fd);
-
-	return 0;
+    close(s_pru_channel.fd);
 }
+
+void init_pru()
+{
+    char pru_rproc_device_state_filename[128];
+    strcpy(pru_rproc_device_state_filename, k_pru_rproc_device_root);
+    strcat(pru_rproc_device_state_filename, "state");
+
+    char pru_rproc_device_firmware_filename[128];
+    strcpy(pru_rproc_device_firmware_filename, k_pru_rproc_device_root);
+    strcat(pru_rproc_device_firmware_filename, "firmware");
+
+    char pru_firmware_filename[128];
+    strcpy(pru_firmware_filename, k_pru_firmware_root);
+    strcat(pru_firmware_filename, k_pru_firmware);
+
+    int pru_rproc_device_state_fd;
+    int pru_rproc_device_firmware_fd;
+
+    // first chcek to make sure all the files are accesable
+    
+    if(access(pru_rproc_device_state_filename, F_OK) < 0) 
+    {
+        printf("can not acces (%s) need to run as root\n", pru_rproc_device_state_filename);
+        exit(-1);
+    }
+
+    pru_rproc_device_state_fd = open (pru_rproc_device_state_filename, O_RDWR);
+
+    if (pru_rproc_device_state_fd < 0)
+    {
+        printf("Could not open %s\n", pru_rproc_device_state_filename);
+        exit(1);
+    }
+
+    if(access(pru_rproc_device_firmware_filename, F_OK) < 0) 
+    {
+        printf("can not acces (%s) need to run as root\n", pru_rproc_device_firmware_filename);
+        exit(-1);
+    }
+
+    pru_rproc_device_firmware_fd = open (pru_rproc_device_firmware_filename, O_WRONLY);
+
+    if (pru_rproc_device_firmware_fd < 0)
+    {
+        printf("Could not open %s\n", pru_rproc_device_firmware_filename);
+        exit(1);
+    }
+
+    if(access(pru_firmware_filename, F_OK) < 0) 
+    {
+        printf("can not acces (%s)\n", pru_firmware_filename);
+        exit(-1);
+    }
+
+    // stop the PRU, first check status.  If running, then stop
+    
+    char buf[128];
+    if (read(pru_rproc_device_state_fd, buf, 128) <= 0)
+    {
+        printf("Could not read %s\n", pru_rproc_device_state_filename);
+        exit(1);
+    }
+
+    if (strncmp(buf, "running", 7) == 0)
+    {
+        printf("Stopping %s\n", k_pru_rproc_device_root);
+
+        write(pru_rproc_device_state_fd, "stop", 4);
+    }
+
+    // load the firmware to the PRU
+
+    printf("Loading firmware %s\n", k_pru_firmware);
+
+    write(pru_rproc_device_firmware_fd, k_pru_firmware, strlen(k_pru_firmware));
+    close(pru_rproc_device_firmware_fd);
+
+    // start the PRU
+
+    printf("Starting %s\n", k_pru_rproc_device_root);
+
+    write(pru_rproc_device_state_fd, "start", 5);
+    close(pru_rproc_device_state_fd);
+
+    usleep(1000000);
+}
+
+void init_rpmsg()
+{
+    s_pru_channel.fd = open(k_pru_channel_device, O_RDWR);
+
+    // open the character device channel to the pru
+    if (s_pru_channel.fd < 0) 
+    {
+        printf("Could not open pru device file%s\n", k_pru_channel_device);
+        exit(-1);
+    }
+
+    // send the init message, this is how the PRU gets our  "address" 
+    if (write(s_pru_channel.fd, "init msg", 9) < 0)
+    {
+        printf("Could not open pru device file%s\n", k_pru_channel_device);
+        exit(-1);
+    }
+}
+        
+void update_rpmsg()
+{
+    if (read(s_pru_channel.fd, s_message_buffer, k_message_buffer_max_len) > 0)
+    {
+        printf("%s", s_message_buffer);
+    }
+}  

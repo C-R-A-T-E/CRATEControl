@@ -19,6 +19,7 @@ INCLUDE = --include_path=$(PRU_CGT)/include --include_path=$(PRU_CGT_CUSTOM)/inc
 STACK_SIZE = 0x100
 HEAP_SIZE = 0x100
 OUT_DIR = out
+BIN_DIR = ../bin
 
 LINKER_COMMAND_FILE=./$(CHIP)_pru.cmd
 
@@ -41,6 +42,8 @@ all: $(TARGET)
 
 $(TARGET): $(OBJS) $(CORE_OBJS) $(LINKER_COMMAND_FILE)
 	/usr/bin/clpru $(CFLAGS) -z -i$(PRU_CGT)/lib -i$(PRU_CGT)/include $(LFLAGS) -o $(TARGET) $(OBJS) $(CORE_OBJS) -m$(MAP) $(LINKER_COMMAND_FILE) --library=libc.a $(LIBS)
+	@echo "Installing firmware\nMust run as privileged user, using sudo"
+	@sudo cp $(TARGET) /lib/firmware/$(FIRMWARE)
 
 $(OUT_DIR)/%.o: %.c
 	@mkdir -p $(OUT_DIR)
@@ -57,7 +60,6 @@ $(CORE_OUT_DIR)/pru_util.o: $(CORE)/pru/pru_util.c
 run: $(TARGET) stop
 	@echo "Installing $(TARGET) as frimware"
 	@echo "Must run as privileged user, using sudo"
-	@sudo cp $(TARGET) /lib/firmware/$(FIRMWARE)
 	@echo $(FIRMWARE) > $(PRU1_1)/firmware
 	@echo "Starting $(PRU1_1)"
 	@echo start > $(PRU1_1)/state
