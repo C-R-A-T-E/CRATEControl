@@ -139,7 +139,9 @@ void init_pru()
     write(pru_rproc_device_state_fd, "start", 5);
     close(pru_rproc_device_state_fd);
 
-    usleep(1000000);
+    // pause for 2 seconds before continuing
+
+    usleep(2000000);
 }
 
 void init_rpmsg()
@@ -154,7 +156,7 @@ void init_rpmsg()
     }
 
     // send the init message, this is how the PRU gets our  "address" 
-    if (write(s_pru_channel.fd, "init msg", 9) < 0)
+    if (write(s_pru_channel.fd, "SYNC", 9) < 0)
     {
         printf("Could not open pru device file%s\n", k_pru_channel_device);
         exit(-1);

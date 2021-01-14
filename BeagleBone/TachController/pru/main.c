@@ -1,12 +1,17 @@
-// Program expects that there are status LED connected at
+// Program expects that there are 3 status LED outputs, a trigger 
+// switch and speed sensor input
+//
+// OUTPUT
 //
 // BBAI Header Pin P8.14 - PRU Heartbeat
 // BBAI Header Pin P8.16 - eCap Activity
-// BBAI Header Pin P8.18 - RPMsg Activity
+// BBAI Header Pin P8.18 - record state
 // 
-// Also, the square wave input signal is connect at
+// INPUT
 //
-// BBAI Header Pin P8.15 - PRU 1 eCap input 
+// BBAI Header Pin P8.15 - PRU 1 eCap input; square wave from speed sensor
+// BBAI Header Pin P8.13 - Trigger Switch input...  Will save all speed data 
+//                         while this signal is high
 //
 // This code stated as a TI example from pru-software-support-package/examples
 
@@ -39,6 +44,8 @@ static const uint32_t k_dt_to_hz = 1000000;
 static const uint32_t k_message_buffer_max_len = 496;
 static const uint32_t k_message_delay_dt_max = 1000000;
 
+static const uint32_t k_record_time_minimum = 1000000;
+
 // The PRU-ICSS system events used for RPMsg are defined in the Linux 
 // device tree
 //
@@ -52,13 +59,38 @@ static const uint32_t k_heartbeat_dt = 500000;
 
 //  The output pins used to communicate status via connected LEDs
 
-static const uint32_t pr1_pru1_gpo5  = 0x1 << 5;     // BBAI Header Pin P8.18
-static const uint32_t pr1_pru1_gpo9  = 0x1 << 9;     // BBAI Header Pin P8.14
-static const uint32_t pr1_pru1_gpo18 = 0x1 << 18;    // BBAI Header Pin P8.16
+static const uint32_t k_pr1_pru1_gpo5  = 0x1 << 5;     // BBAI Header Pin P8.18
+static const uint32_t k_pr1_pru1_gpo9  = 0x1 << 9;     // BBAI Header Pin P8.14
+static const uint32_t k_pr1_pru1_gpo18 = 0x1 << 18;    // BBAI Header Pin P8.16
+
+//  The input pins from speed sensor and trigger switch
+//
+// don't actually need to define input for BBAI Header Pin P8.15 since it is
+// the eCap input pin and is not used directly by software
+
+static const uint32_t k_pr1_pru1_gpi7 = 0x1 << 7;     // BBAI Header Pin P8.13
+
+
+// -----------------------------------------------------------------------------
+// states
+// -----------------------------------------------------------------------------
+
+enum state
+{
+    init,
+    sync,
+    capture,
+    record,
+
+    invalid = -1
+};
 
 // -----------------------------------------------------------------------------
 // file scope statics
 // -----------------------------------------------------------------------------
+
+static enum state s_state;
+static uint32_t s_state_start_time;
 
 static struct pru_rpmsg_transport s_transport;
 
@@ -76,8 +108,6 @@ static char s_tmp_message_buffer[496];
 static uint16_t s_rpmsg_arm_addr;
 static uint16_t s_rpmsg_pru_addr;
 
-static uint8_t s_connected_to_arm;
-
 // -----------------------------------------------------------------------------
 //  forward decl of internal methods
 // -----------------------------------------------------------------------------
@@ -89,9 +119,14 @@ void init_rpmsg();
 void init_gpio();
 void init_heartbeat();
 
-void update_rpmsg();
 void update_ecap();
 void update_heartbeat();
+
+void update();
+void set_state(enum state);
+
+int8_t is_record_switch_on();
+int8_t sync_from_arm_received();
 
 // -----------------------------------------------------------------------------
 //  Main
@@ -99,37 +134,220 @@ void update_heartbeat();
 
 void main(void)
 {
-    // Init
+    // set initial state and init
+    s_state = invalid;
+    set_state(init);
 
-    pru_time_init();
-
-    init_syscfg();
-    init_intc();
-    init_ecap();
-    init_rpmsg();
-    init_gpio();
-    init_heartbeat();
-
-    // Update
-    
+    // execute forever
     while (1) 
     {
-        pru_time_update();
+        update();
+    }
+}
 
-        update_rpmsg();
+// -----------------------------------------------------------------------------
+//  State Machine Methods (update and set_state)
+// -----------------------------------------------------------------------------
+
+void update()
+{
+    pru_time_update();
+
+    // update state
+
+    while (1)
+    {
+        enum state prev_state = s_state;
+
+        switch (s_state)
+        {
+            case init:
+                {
+                    set_state(sync);
+                }
+                break;
+
+            case sync:
+                {
+                    if (sync_from_arm_received())
+                    {
+                        set_state(capture);
+                    }
+                }
+                break;
+
+            case capture:
+                {
+                    if (pru_time_gettime() - s_state_start_time > k_record_time_minimum &&
+                        is_record_switch_on())
+                    {
+                        set_state(record);
+                    }
+                }
+                break;
+
+            case record:
+                {
+                    if (pru_time_gettime() - s_state_start_time > k_record_time_minimum &&
+                        !is_record_switch_on())
+                    {
+                        set_state(capture);
+                    }
+                }
+                break;
+        }
+
+        if (s_state == prev_state)
+        {
+            break;
+        }
+    }
+
+    // now that state is updated, distribut the rest of the updates
+    
+    if (s_state == capture || s_state == record)
+    {
         update_ecap();
         update_heartbeat();
     }
 }
 
+void set_state(enum state new_state)
+{
+    if (s_state == new_state)
+    {
+        return;
+    }
+
+    // do work on leaving state
+
+    switch (s_state)
+    {
+        case sync:
+            {
+                // turn off all LED
+                
+                __R30 &= ~(k_pr1_pru1_gpo5);
+                __R30 &= ~(k_pr1_pru1_gpo9);
+                __R30 &= ~(k_pr1_pru1_gpo18);
+            }
+            break;
+
+        case record:
+            {
+                // turn on record LED
+
+                __R30 &= ~(k_pr1_pru1_gpo5);
+                
+                // send start message
+                
+                char start_message[128];
+                memset(start_message, 0, 128);
+
+                char *start_message_current = &start_message[0];
+
+                memcpy(start_message_current, "STOP_MESSAGE:", 13);;
+                start_message_current += 13;
+
+                char* timestamp_string = pru_util_itoa(pru_time_gettime(), 10);
+                int timestamp_string_len = strlen(timestamp_string);
+                memcpy(start_message_current, timestamp_string, timestamp_string_len);
+                start_message_current += timestamp_string_len;
+
+                *start_message_current = '\n';
+                start_message_current++;
+                *start_message_current = 0;
+
+                pru_rpmsg_send(&s_transport, 
+                        s_rpmsg_pru_addr, 
+                        s_rpmsg_arm_addr, 
+                        start_message,
+                        128);
+            }
+            break;
+
+        default:
+            break;
+    }
+
+    // update to new state
+    s_state = new_state;
+    s_state_start_time = pru_time_gettime();
+
+    // do work on entering state
+    
+    switch (s_state)
+    {
+        case init:
+            {
+                // init the pru time module
+                pru_time_init();
+
+                // init all our interal systems
+                init_syscfg();
+                init_intc();
+                init_ecap();
+                init_rpmsg();
+                init_gpio();
+                init_heartbeat();
+            }
+            break;
+
+        case sync:
+            {
+                // turn on all LED, indicating waiting for sync
+                
+                __R30 |= k_pr1_pru1_gpo5;
+                __R30 |= k_pr1_pru1_gpo9;
+                __R30 |= k_pr1_pru1_gpo18;
+            }
+            break;
+
+        case record:
+            {
+                // turn on record LED
+
+                __R30 |= k_pr1_pru1_gpo5;
+                
+                // send start message
+                
+                char start_message[128];
+                memset(start_message, 0, 128);
+
+                char *start_message_current = &start_message[0];
+
+                memcpy(start_message_current, "START_MESSAGE:", 14);;
+                start_message_current += 14;
+
+                char* timestamp_string = pru_util_itoa(pru_time_gettime(), 10);
+                int timestamp_string_len = strlen(timestamp_string);
+                memcpy(start_message_current, timestamp_string, timestamp_string_len);
+                start_message_current += timestamp_string_len;
+
+                *start_message_current = '\n';
+                start_message_current++;
+                *start_message_current = 0;
+
+                pru_rpmsg_send(&s_transport, 
+                        s_rpmsg_pru_addr, 
+                        s_rpmsg_arm_addr, 
+                        start_message,
+                        128);
+            }
+            break;
+
+        default:
+            break;
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Utility Methods
+// -----------------------------------------------------------------------------
+
 void send_message()
 {
-    // Only send message if there is someone on the other side listing
-
-    if (s_connected_to_arm)
-    {
-        pru_rpmsg_send(&s_transport, s_rpmsg_pru_addr, s_rpmsg_arm_addr, s_message_buffer, k_message_buffer_max_len);//s_message_buffer_index);
-    }
+    pru_rpmsg_send(&s_transport, s_rpmsg_pru_addr, s_rpmsg_arm_addr, s_message_buffer, k_message_buffer_max_len);
 
     s_message_buffer_index = 0;
     memset(s_message_buffer, 0, k_message_buffer_max_len);
@@ -180,6 +398,33 @@ void append_to_message(uint32_t dt)
 
     memcpy(&s_message_buffer[s_message_buffer_index], s_tmp_message_buffer, message_len); 
     s_message_buffer_index += message_len;
+}
+
+int8_t sync_from_arm_received()
+{
+    int8_t sync_message_received = 0;
+
+    if (__R31 & k_pru_from_host_event)
+    {
+        // Clear the host interrupt envent
+        CT_INTC.SICR_bit.STATUS_CLR_INDEX = k_pru_from_host_event;
+
+        uint16_t message_len;
+        while (pru_rpmsg_receive(&s_transport, &s_rpmsg_arm_addr, &s_rpmsg_pru_addr, s_tmp_message_buffer, &message_len) == PRU_RPMSG_SUCCESS) 
+        {
+            if (strncmp(s_tmp_message_buffer, "SYNC", 4) == 0)
+            {
+                sync_message_received = 1;
+            }
+        }
+    }
+
+    return sync_message_received;
+}
+
+int8_t is_record_switch_on()
+{
+    return __R31 & k_pr1_pru1_gpi7;
 }
 
 // -----------------------------------------------------------------------------
@@ -290,9 +535,6 @@ void init_rpmsg()
                  31);
     } while (message_status != PRU_RPMSG_SUCCESS);
 
-    // Need to get first message from arm before we have established there is someone listing
-    s_connected_to_arm = 0;
-
     // init message send time
     s_message_last_send_time = pru_time_gettime();
 
@@ -324,9 +566,9 @@ void init_gpio()
 
     // turn off all LEDs to start with
     
-    __R30 &= ~(pr1_pru1_gpo5);
-    __R30 &= ~(pr1_pru1_gpo9);
-    __R30 &= ~(pr1_pru1_gpo18);
+    __R30 &= ~(k_pr1_pru1_gpo5);
+    __R30 &= ~(k_pr1_pru1_gpo9);
+    __R30 &= ~(k_pr1_pru1_gpo18);
 }
 
 void init_heartbeat()
@@ -347,7 +589,7 @@ void update_ecap()
         if (CT_ECAP.ECFLG_bit.CEVT1 == 0x1)
         {
             // turn on the eCap trigger LED
-            __R30 |= pr1_pru1_gpo18;
+            __R30 |= k_pr1_pru1_gpo18;
     
             //  Grab the counter, which is cycle difference since last capture
             //  event 1.  This is the time signal was low, right before event 1
@@ -363,7 +605,7 @@ void update_ecap()
         if (CT_ECAP.ECFLG_bit.CEVT2 == 0x1)
         {
             // turn 0ff the eCap trigger LED
-            __R30 &= ~(pr1_pru1_gpo18);
+            __R30 &= ~(k_pr1_pru1_gpo18);
 
             //  Grab the counter, which is cycle difference since last capture
             //  event 2.  This is the time signal was high, right before event 2
@@ -383,29 +625,6 @@ void update_ecap()
     }
 }
 
-void update_rpmsg()
-{
-    uint16_t message_len;
-
-    //  
-    //  Check for Host Interrupt Event
-    //
- 
-    if (__R31 & k_pru_from_host_event)
-    {
-        // Clear the host interrupt envent
-        CT_INTC.SICR_bit.STATUS_CLR_INDEX = k_pru_from_host_event;
-
-        // Receive all available messages, multiple messages can be sent per kick 
-        while (pru_rpmsg_receive(&s_transport, &s_rpmsg_arm_addr, &s_rpmsg_pru_addr, s_tmp_message_buffer, &message_len) == PRU_RPMSG_SUCCESS) 
-        {
-            __R30 |= pr1_pru1_gpo5;
-        }
-
-        s_connected_to_arm = 1;
-    }
-}
-
 void update_heartbeat()
 {
     uint32_t time = pru_time_gettime();
@@ -414,13 +633,13 @@ void update_heartbeat()
     {
         s_heartbeat_start_time = time;
 
-        if (__R30 & pr1_pru1_gpo9)
+        if (__R30 & k_pr1_pru1_gpo9)
         {
-            __R30 &= ~(pr1_pru1_gpo9);
+            __R30 &= ~(k_pr1_pru1_gpo9);
         }
         else
         {
-            __R30 |= pr1_pru1_gpo9;
+            __R30 |= k_pr1_pru1_gpo9;
         }
     }
 }
