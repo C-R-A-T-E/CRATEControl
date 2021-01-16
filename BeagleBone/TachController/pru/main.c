@@ -92,6 +92,8 @@ enum state
 static enum state s_state;
 static uint32_t s_state_start_time;
 
+static uint32_t s_rpm_current;
+
 static struct pru_rpmsg_transport s_transport;
 
 static uint32_t s_signal_low_dt;
@@ -107,6 +109,8 @@ static char s_tmp_message_buffer[496];
 
 static uint16_t s_rpmsg_arm_addr;
 static uint16_t s_rpmsg_pru_addr;
+
+static uint32_t s_evt1_cnt;
 
 // -----------------------------------------------------------------------------
 //  forward decl of internal methods
@@ -124,6 +128,12 @@ void update_heartbeat();
 
 void update();
 void set_state(enum state);
+
+void send_message();
+void append_message(uint32_t rpm);
+
+void send_start_message(uint32_t rpm);
+void send_stop_message(uint32_t rpm);
 
 int8_t is_record_switch_on();
 int8_t sync_from_arm_received();
@@ -235,34 +245,13 @@ void set_state(enum state new_state)
 
         case record:
             {
-                // turn on record LED
+                // turn off record LED
 
                 __R30 &= ~(k_pr1_pru1_gpo5);
                 
-                // send start message
+                // send stop message
                 
-                char start_message[128];
-                memset(start_message, 0, 128);
-
-                char *start_message_current = &start_message[0];
-
-                memcpy(start_message_current, "STOP_MESSAGE:", 13);;
-                start_message_current += 13;
-
-                char* timestamp_string = pru_util_itoa(pru_time_gettime(), 10);
-                int timestamp_string_len = strlen(timestamp_string);
-                memcpy(start_message_current, timestamp_string, timestamp_string_len);
-                start_message_current += timestamp_string_len;
-
-                *start_message_current = '\n';
-                start_message_current++;
-                *start_message_current = 0;
-
-                pru_rpmsg_send(&s_transport, 
-                        s_rpmsg_pru_addr, 
-                        s_rpmsg_arm_addr, 
-                        start_message,
-                        128);
+                send_stop_message(s_rpm_current);
             }
             break;
 
@@ -311,28 +300,7 @@ void set_state(enum state new_state)
                 
                 // send start message
                 
-                char start_message[128];
-                memset(start_message, 0, 128);
-
-                char *start_message_current = &start_message[0];
-
-                memcpy(start_message_current, "START_MESSAGE:", 14);;
-                start_message_current += 14;
-
-                char* timestamp_string = pru_util_itoa(pru_time_gettime(), 10);
-                int timestamp_string_len = strlen(timestamp_string);
-                memcpy(start_message_current, timestamp_string, timestamp_string_len);
-                start_message_current += timestamp_string_len;
-
-                *start_message_current = '\n';
-                start_message_current++;
-                *start_message_current = 0;
-
-                pru_rpmsg_send(&s_transport, 
-                        s_rpmsg_pru_addr, 
-                        s_rpmsg_arm_addr, 
-                        start_message,
-                        128);
+                send_start_message(s_rpm_current);
             }
             break;
 
@@ -345,9 +313,18 @@ void set_state(enum state new_state)
 // Utility Methods
 // -----------------------------------------------------------------------------
 
+uint32_t dt_to_rpm(uint32_t dt)
+{
+    uint32_t dt_per_revelution = dt * k_num_teeth;
+    return k_dt_to_hz / dt_per_revelution;
+}
+
 void send_message()
 {
-    pru_rpmsg_send(&s_transport, s_rpmsg_pru_addr, s_rpmsg_arm_addr, s_message_buffer, k_message_buffer_max_len);
+    if (strlen(s_message_buffer) > 0)
+    {
+        pru_rpmsg_send(&s_transport, s_rpmsg_pru_addr, s_rpmsg_arm_addr, s_message_buffer, k_message_buffer_max_len);
+    }
 
     s_message_buffer_index = 0;
     memset(s_message_buffer, 0, k_message_buffer_max_len);
@@ -355,11 +332,75 @@ void send_message()
     s_message_last_send_time = pru_time_gettime();
 }
 
-void append_to_message(uint32_t dt)
+void send_start_message(uint32_t rpm)
 {
-    uint32_t timestamp = pru_time_gettime();
-    uint32_t dt_per_revelution = dt * k_num_teeth;
-    uint32_t rpm = k_dt_to_hz / dt_per_revelution;
+    // Send everything we currently have buffered
+    send_message();
+
+    // Build the start message
+
+    char* message = s_tmp_message_buffer;
+
+    memcpy(message, "START_MESSAGE:", 14);
+    message += 14;
+
+    char* rpm_string = pru_util_itoa(rpm, 10);
+    int rpm_string_len = strlen(rpm_string);
+    memcpy(message, rpm_string, rpm_string_len);
+    message += rpm_string_len;
+
+    *message = ':';
+    message++;
+
+    char* num_teeth_string = pru_util_itoa(k_num_teeth, 10);
+    int num_teeth_string_len = strlen(num_teeth_string);
+    memcpy(message, num_teeth_string, num_teeth_string_len);
+    message += num_teeth_string_len;
+
+    *message = '\n';
+    message++;
+    *message = 0;
+
+    int32_t message_len = strlen(s_tmp_message_buffer);
+    memcpy(&s_message_buffer[s_message_buffer_index], s_tmp_message_buffer, message_len); 
+    s_message_buffer_index += message_len;
+
+    // Now, send the start message
+    send_message();
+}
+
+void send_stop_message(uint32_t rpm)
+{
+    // Send everything we currently have buffered
+    send_message();
+
+    // Build the start message
+
+    char* message = s_tmp_message_buffer;
+
+    memcpy(message, "STOP_MESSAGE:", 13);;
+    message += 13;
+
+    char* rpm_string = pru_util_itoa(rpm, 10);
+    int rpm_string_len = strlen(rpm_string);
+    memcpy(message, rpm_string, rpm_string_len);
+
+    message += rpm_string_len;
+    *message = '\n';
+    message++;
+    *message = 0;
+
+    int32_t message_len = strlen(s_tmp_message_buffer);
+    memcpy(&s_message_buffer[s_message_buffer_index], s_tmp_message_buffer, message_len); 
+    s_message_buffer_index += message_len;
+
+    // Now, send the start message
+    send_message();
+}
+
+void append_to_message(uint32_t rpm)
+{
+    uint32_t timestamp = pru_time_gettime() - s_state_start_time;
 
     // Can't use sprintf beacuse it doesn't fit in PRU memory
     // so used an custom itoa impl
@@ -500,6 +541,8 @@ void init_ecap()
     //  init our dt counters
     s_signal_low_dt = 0;
     s_signal_high_dt = 0;
+
+    s_rpm_current = 0;
 }
 
 void init_rpmsg()
@@ -569,6 +612,8 @@ void init_gpio()
     __R30 &= ~(k_pr1_pru1_gpo5);
     __R30 &= ~(k_pr1_pru1_gpo9);
     __R30 &= ~(k_pr1_pru1_gpo18);
+
+    s_evt1_cnt = 0;
 }
 
 void init_heartbeat()
@@ -588,8 +633,23 @@ void update_ecap()
     {
         if (CT_ECAP.ECFLG_bit.CEVT1 == 0x1)
         {
-            // turn on the eCap trigger LED
-            __R30 |= k_pr1_pru1_gpo18;
+            s_evt1_cnt++;
+
+            if (s_evt1_cnt >= k_num_teeth)
+            {
+                s_evt1_cnt = 0;
+
+                if (__R30 & k_pr1_pru1_gpo18)
+                {
+                    // turn 0ff the eCap trigger LED
+                    __R30 &= ~(k_pr1_pru1_gpo18);
+                }
+                else
+                {
+                    // turn on the eCap trigger LED
+                    __R30 |= k_pr1_pru1_gpo18;
+                }
+            }
     
             //  Grab the counter, which is cycle difference since last capture
             //  event 1.  This is the time signal was low, right before event 1
@@ -604,9 +664,6 @@ void update_ecap()
 
         if (CT_ECAP.ECFLG_bit.CEVT2 == 0x1)
         {
-            // turn 0ff the eCap trigger LED
-            __R30 &= ~(k_pr1_pru1_gpo18);
-
             //  Grab the counter, which is cycle difference since last capture
             //  event 2.  This is the time signal was high, right before event 2
             //  (signal goes low) triggers.  Store as micorseconds
@@ -618,7 +675,8 @@ void update_ecap()
             CT_ECAP.ECCLR_bit.CEVT2 = 0x1;
 
             //  We have 1 complete high - low cycle.  Write it out to the message
-            append_to_message(s_signal_high_dt + s_signal_low_dt);
+            s_rpm_current = dt_to_rpm(s_signal_high_dt + s_signal_low_dt);
+            append_to_message(s_rpm_current);
         }
 
         CT_ECAP.ECCLR_bit.INT = 0x1;
