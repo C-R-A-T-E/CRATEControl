@@ -37,14 +37,14 @@ volatile register uint32_t __R31;
 // file scope consts
 // -----------------------------------------------------------------------------
 
-static const uint32_t k_num_teeth = 20;
+static const uint32_t k_num_teeth = 32;
 static const uint32_t k_cycles_to_micros = 200;
 static const uint32_t k_dt_to_hz = 1000000;
 
 static const uint32_t k_message_buffer_max_len = 496;
 static const uint32_t k_message_delay_dt_max = 1000000;
 
-static const uint32_t k_record_time_minimum = 1000000;
+static const uint32_t s_state_time_min = 1000000;
 
 // The PRU-ICSS system events used for RPMsg are defined in the Linux 
 // device tree
@@ -102,10 +102,11 @@ static uint32_t s_signal_high_dt;
 static uint32_t s_heartbeat_start_time;
 
 static char s_message_last_send_time;
-static char s_message_buffer[496];
-static uint32_t s_message_buffer_index;
+static char s_send_accum_buffer[496];
+static uint32_t s_send_accum_buffer_index;
 
-static char s_tmp_message_buffer[496];
+static char s_send_message_buffer[496];
+static char s_recv_message_buffer[496];
 
 static uint16_t s_rpmsg_arm_addr;
 static uint16_t s_rpmsg_pru_addr;
@@ -123,8 +124,8 @@ void init_rpmsg();
 void init_gpio();
 void init_heartbeat();
 
-void update_ecap();
 void update_heartbeat();
+void update_ecap();
 
 void update();
 void set_state(enum state);
@@ -136,7 +137,8 @@ void send_start_message(uint32_t rpm);
 void send_stop_message(uint32_t rpm);
 
 int8_t is_record_switch_on();
-int8_t sync_from_arm_received();
+int8_t check_for_arm_sync();
+int8_t check_for_arm_exit();
 
 // -----------------------------------------------------------------------------
 //  Main
@@ -179,7 +181,7 @@ void update()
 
             case sync:
                 {
-                    if (sync_from_arm_received())
+                    if (check_for_arm_sync())
                     {
                         set_state(capture);
                     }
@@ -188,7 +190,11 @@ void update()
 
             case capture:
                 {
-                    if (pru_time_gettime() - s_state_start_time > k_record_time_minimum &&
+                    if (check_for_arm_exit())
+                    {
+                        set_state(sync);
+                    }
+                    else if (pru_time_gettime() - s_state_start_time > s_state_time_min &&
                         is_record_switch_on())
                     {
                         set_state(record);
@@ -198,7 +204,11 @@ void update()
 
             case record:
                 {
-                    if (pru_time_gettime() - s_state_start_time > k_record_time_minimum &&
+                    if (check_for_arm_exit())
+                    {
+                        set_state(sync);
+                    }
+                    else if (pru_time_gettime() - s_state_start_time > s_state_time_min &&
                         !is_record_switch_on())
                     {
                         set_state(capture);
@@ -316,18 +326,22 @@ void set_state(enum state new_state)
 uint32_t dt_to_rpm(uint32_t dt)
 {
     uint32_t dt_per_revelution = dt * k_num_teeth;
-    return k_dt_to_hz / dt_per_revelution;
+    
+    // multiply by 60 is to convert form revolutions per second to revolutions
+    // per minute
+    
+    return (k_dt_to_hz * 60) / dt_per_revelution;
 }
 
 void send_message()
 {
-    if (strlen(s_message_buffer) > 0)
+    if (strlen(s_send_accum_buffer) > 0)
     {
-        pru_rpmsg_send(&s_transport, s_rpmsg_pru_addr, s_rpmsg_arm_addr, s_message_buffer, k_message_buffer_max_len);
+        pru_rpmsg_send(&s_transport, s_rpmsg_pru_addr, s_rpmsg_arm_addr, s_send_accum_buffer, k_message_buffer_max_len);
     }
 
-    s_message_buffer_index = 0;
-    memset(s_message_buffer, 0, k_message_buffer_max_len);
+    s_send_accum_buffer_index = 0;
+    memset(s_send_accum_buffer, 0, k_message_buffer_max_len);
 
     s_message_last_send_time = pru_time_gettime();
 }
@@ -339,7 +353,7 @@ void send_start_message(uint32_t rpm)
 
     // Build the start message
 
-    char* message = s_tmp_message_buffer;
+    char* message = s_send_message_buffer;
 
     memcpy(message, "START_MESSAGE:", 14);
     message += 14;
@@ -361,9 +375,9 @@ void send_start_message(uint32_t rpm)
     message++;
     *message = 0;
 
-    int32_t message_len = strlen(s_tmp_message_buffer);
-    memcpy(&s_message_buffer[s_message_buffer_index], s_tmp_message_buffer, message_len); 
-    s_message_buffer_index += message_len;
+    int32_t message_len = strlen(s_send_message_buffer);
+    memcpy(&s_send_accum_buffer[s_send_accum_buffer_index], s_send_message_buffer, message_len); 
+    s_send_accum_buffer_index += message_len;
 
     // Now, send the start message
     send_message();
@@ -376,7 +390,7 @@ void send_stop_message(uint32_t rpm)
 
     // Build the start message
 
-    char* message = s_tmp_message_buffer;
+    char* message = s_send_message_buffer;
 
     memcpy(message, "STOP_MESSAGE:", 13);;
     message += 13;
@@ -390,9 +404,9 @@ void send_stop_message(uint32_t rpm)
     message++;
     *message = 0;
 
-    int32_t message_len = strlen(s_tmp_message_buffer);
-    memcpy(&s_message_buffer[s_message_buffer_index], s_tmp_message_buffer, message_len); 
-    s_message_buffer_index += message_len;
+    int32_t message_len = strlen(s_send_message_buffer);
+    memcpy(&s_send_accum_buffer[s_send_accum_buffer_index], s_send_message_buffer, message_len); 
+    s_send_accum_buffer_index += message_len;
 
     // Now, send the start message
     send_message();
@@ -405,7 +419,7 @@ void append_to_message(uint32_t rpm)
     // Can't use sprintf beacuse it doesn't fit in PRU memory
     // so used an custom itoa impl
     
-    char* message = s_tmp_message_buffer;
+    char* message = s_send_message_buffer;
 
     char* timestamp_string = pru_util_itoa(timestamp, 10);
     int timestamp_string_len = strlen(timestamp_string);
@@ -428,20 +442,20 @@ void append_to_message(uint32_t rpm)
     // flow the buffer, send the current message and then add this to 
     // a new message buffer
     
-    int32_t message_len = strlen(s_tmp_message_buffer);
+    int32_t message_len = strlen(s_send_message_buffer);
     uint32_t current_time = pru_time_gettime();
 
     if (current_time - s_message_last_send_time > k_message_delay_dt_max ||
-        s_message_buffer_index + message_len > k_message_buffer_max_len)
+        s_send_accum_buffer_index + message_len > k_message_buffer_max_len)
     {
         send_message();
     }
 
-    memcpy(&s_message_buffer[s_message_buffer_index], s_tmp_message_buffer, message_len); 
-    s_message_buffer_index += message_len;
+    memcpy(&s_send_accum_buffer[s_send_accum_buffer_index], s_send_message_buffer, message_len); 
+    s_send_accum_buffer_index += message_len;
 }
 
-int8_t sync_from_arm_received()
+int8_t check_for_arm_sync()
 {
     int8_t sync_message_received = 0;
 
@@ -451,9 +465,9 @@ int8_t sync_from_arm_received()
         CT_INTC.SICR_bit.STATUS_CLR_INDEX = k_pru_from_host_event;
 
         uint16_t message_len;
-        while (pru_rpmsg_receive(&s_transport, &s_rpmsg_arm_addr, &s_rpmsg_pru_addr, s_tmp_message_buffer, &message_len) == PRU_RPMSG_SUCCESS) 
+        while (pru_rpmsg_receive(&s_transport, &s_rpmsg_arm_addr, &s_rpmsg_pru_addr, s_recv_message_buffer, &message_len) == PRU_RPMSG_SUCCESS) 
         {
-            if (strncmp(s_tmp_message_buffer, "SYNC", 4) == 0)
+            if (strncmp(s_recv_message_buffer, "SYNC", 4) == 0)
             {
                 sync_message_received = 1;
             }
@@ -461,6 +475,28 @@ int8_t sync_from_arm_received()
     }
 
     return sync_message_received;
+}
+
+int8_t check_for_arm_exit()
+{
+    int8_t exit_message_received = 0;
+
+    if (__R31 & k_pru_from_host_event)
+    {
+        // Clear the host interrupt envent
+        CT_INTC.SICR_bit.STATUS_CLR_INDEX = k_pru_from_host_event;
+
+        uint16_t message_len;
+        while (pru_rpmsg_receive(&s_transport, &s_rpmsg_arm_addr, &s_rpmsg_pru_addr, s_recv_message_buffer, &message_len) == PRU_RPMSG_SUCCESS) 
+        {
+            if (strncmp(s_recv_message_buffer, "EXIT", 4) == 0)
+            {
+                exit_message_received = 1;
+            }
+        }
+    }
+
+    return exit_message_received;
 }
 
 int8_t is_record_switch_on()
@@ -582,8 +618,8 @@ void init_rpmsg()
     s_message_last_send_time = pru_time_gettime();
 
     // Clear out the message buffer
-    s_message_buffer_index = 0;
-    memset(s_message_buffer, 0, k_message_buffer_max_len);
+    s_send_accum_buffer_index = 0;
+    memset(s_send_accum_buffer, 0, k_message_buffer_max_len);
 }
 
 void init_gpio()

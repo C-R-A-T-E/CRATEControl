@@ -9,6 +9,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/poll.h>
+#include <signal.h>
 
 // -----------------------------------------------------------------------------
 // file scope consts
@@ -40,10 +41,22 @@ static uint32_t s_prev_sample_time_usec;
 //  forward decl of internal methods
 // -----------------------------------------------------------------------------
 
+void init_sig_handlers();
 void init_pru();
 void init_rpmsg();
 
 void update_rpmsg();
+
+void shutdown();
+
+// -----------------------------------------------------------------------------
+// SIGINT handler
+// -----------------------------------------------------------------------------
+
+void termination_handler (int signum)
+{
+    shutdown();
+}
 
 // -----------------------------------------------------------------------------
 //  Main
@@ -53,6 +66,7 @@ int main(void)
 {
     // Init
 
+    init_sig_handlers();
     init_pru();
     init_rpmsg();
 
@@ -63,7 +77,25 @@ int main(void)
         update_rpmsg();
     }
 
+}
+
+void shutdown()
+{
+    write(s_pru_channel.fd, "EXIT", 4);
     close(s_pru_channel.fd);
+
+    exit(0);
+}
+
+void init_sig_handlers()
+{
+    struct sigaction action;
+
+    action.sa_handler = termination_handler;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = 0;
+
+    sigaction (SIGINT, &action, NULL);
 }
 
 void init_pru()
@@ -215,7 +247,7 @@ void start_recording(char* message)
     
     if (sample_rpm != 0 && s_num_teeth != 0)
     {
-        desired_dt = (uint32_t)(1000000 / (sample_rpm * s_num_teeth));
+        desired_dt = (uint32_t)(1000000 * 60 / (sample_rpm * s_num_teeth));
     }
 
     fprintf(s_recording_file, "host_time,pru_usec,rpm, dt,est dt, teeth\n");
@@ -235,6 +267,7 @@ void stop_recording(char* message)
 
     s_recording = 0;
     fclose(s_recording_file);
+
 }
 
 void process_message(char *message)
@@ -261,7 +294,7 @@ void process_message(char *message)
     
             if (sample_rpm != 0 && s_num_teeth != 0)
             {
-                desired_dt = (uint32_t)(1000000 / (sample_rpm * s_num_teeth));
+                desired_dt = (uint32_t)(1000000 * 60 / (sample_rpm * s_num_teeth));
             }
 
             fprintf(s_recording_file, "%s,%u,%u,%u,%u\n", timestamp, sample_time_usec, sample_rpm, dt, desired_dt);
