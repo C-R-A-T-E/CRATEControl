@@ -197,6 +197,7 @@ void init_rpmsg()
     }
 
     // send the init message, this is how the PRU gets our  "address" 
+
     if (write(s_pru_channel.fd, "SYNC", 9) < 0)
     {
         printf("Could not open pru device file%s\n", k_pru_channel_device);
@@ -309,8 +310,6 @@ void update_rpmsg()
 {
     if (read(s_pru_channel.fd, s_message_buffer, k_message_buffer_max_len) > 0)
     {
-        // printf("NEW MESSAGE >>>%s<<<\n", s_message_buffer);
-
         // check for special messages
         
         if (strncmp(s_message_buffer, "START", 5) == 0)

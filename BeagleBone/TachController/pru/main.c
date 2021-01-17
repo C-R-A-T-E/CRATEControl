@@ -270,6 +270,7 @@ void set_state(enum state new_state)
     }
 
     // update to new state
+
     s_state = new_state;
     s_state_start_time = pru_time_gettime();
 
@@ -280,9 +281,11 @@ void set_state(enum state new_state)
         case init:
             {
                 // init the pru time module
+
                 pru_time_init();
 
                 // init all our interal systems
+                
                 init_syscfg();
                 init_intc();
                 init_ecap();
@@ -349,6 +352,7 @@ void send_message()
 void send_start_message(uint32_t rpm)
 {
     // Send everything we currently have buffered
+
     send_message();
 
     // Build the start message
@@ -380,12 +384,14 @@ void send_start_message(uint32_t rpm)
     s_send_accum_buffer_index += message_len;
 
     // Now, send the start message
+
     send_message();
 }
 
 void send_stop_message(uint32_t rpm)
 {
     // Send everything we currently have buffered
+
     send_message();
 
     // Build the start message
@@ -409,6 +415,7 @@ void send_stop_message(uint32_t rpm)
     s_send_accum_buffer_index += message_len;
 
     // Now, send the start message
+
     send_message();
 }
 
@@ -462,8 +469,11 @@ int8_t check_for_arm_sync()
     if (__R31 & k_pru_from_host_event)
     {
         // Clear the host interrupt envent
+
         CT_INTC.SICR_bit.STATUS_CLR_INDEX = k_pru_from_host_event;
 
+        // Look for a message that starts with "SYNC"
+        
         uint16_t message_len;
         while (pru_rpmsg_receive(&s_transport, &s_rpmsg_arm_addr, &s_rpmsg_pru_addr, s_recv_message_buffer, &message_len) == PRU_RPMSG_SUCCESS) 
         {
@@ -484,8 +494,11 @@ int8_t check_for_arm_exit()
     if (__R31 & k_pru_from_host_event)
     {
         // Clear the host interrupt envent
+
         CT_INTC.SICR_bit.STATUS_CLR_INDEX = k_pru_from_host_event;
 
+        // Look for a message that starts with "EXIT"
+        
         uint16_t message_len;
         while (pru_rpmsg_receive(&s_transport, &s_rpmsg_arm_addr, &s_rpmsg_pru_addr, s_recv_message_buffer, &message_len) == PRU_RPMSG_SUCCESS) 
         {
@@ -615,9 +628,11 @@ void init_rpmsg()
     } while (message_status != PRU_RPMSG_SUCCESS);
 
     // init message send time
+
     s_message_last_send_time = pru_time_gettime();
 
     // Clear out the message buffer
+    
     s_send_accum_buffer_index = 0;
     memset(s_send_accum_buffer, 0, k_message_buffer_max_len);
 }
